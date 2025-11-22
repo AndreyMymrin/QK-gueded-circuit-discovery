@@ -20,9 +20,9 @@ The attention head families are primarily divided according to their attention p
 
 ![Finergrained](figures/neurips_logicInterp_9B_finegrained.png)
 
-The surprising part is that the LLMs we analyzed all seem to share the functional sub-circuits, that is, they contain families of attention heads which exhibit specialized attention patterns as seen in the 9B model, and respond similarly to the "causal surgeries".
+The surprising part is that the LLMs we analyzed all seem to share the functional sub-circuits, that is, they contain families of attention heads which exhibit specialized attention patterns as seen in the 9B model, and respond similarly to the "causal surgeries". However, certain differences still exists across scale: the 27B model's circuits have a greater degree of parallelism in it, e.g., some of its fact-processing heads have direct effects on the logits, while the 9B model's do not. On the other hand, for the circuit we surfaced in a small 3-layer model trained from scratch on a slightly more complex version of the logic problems, we observed weaker human-interpretability, and the model relies on heuristics instead of consistent mechanisms for latently resolving parts of the proof. Please refer to our paper for full details.
 
-Please refer to our paper for full details. In addition, while the full analysis in our paper was conducted inside Google, the open-sourced code in this repository is built on the [TransformerLens library](https://github.com/TransformerLensOrg/TransformerLens).
+In addition, while the full analysis in our paper was conducted inside Google, the open-sourced code in this repository is built on the [TransformerLens library](https://github.com/TransformerLensOrg/TransformerLens).
 
 ## Getting Started
 
