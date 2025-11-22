@@ -1,10 +1,28 @@
 # A Implies B: Circuit Analysis in LLMs for Propositional Logical Reasoning
 
-## Overview
+## Introduction
 
 This repository contains a walkthrough of the main experiments in the NeurIPS 2025 paper [A Implies B: Circuit Analysis in LLMs for Propositional Logical Reasoning](https://arxiv.org/pdf/2411.04105). 
 
-The project is built on the [TransformerLens library](https://github.com/TransformerLensOrg/TransformerLens).
+*About this work*. We wish to make progress in understanding the latent reasoning capabilities of LLMs. We use tools from mechanistic interpretability to do this. In particular, we perform *causal mediation analysis* on how LLMs (Gemma-2-9B, Gemma-2-27B and Mistral-7B-v0.1) write minimal *propositional logic* proofs that requires combining rules and facts. The problems have the following form:
+
+Rules: $A$ or $B$ implies $C$. $D$ implies $E$. Facts: $A$ is true. $B$ is false. $D$ is true. Question: what is the truth value of $C$? Minimal Proof: $A$ is true. $A$ or $B$ implies $C$; $C$ is true.
+
+We show the LLMs a few examples of such problem-proof pairs, and ask them to write the proof for a new one. We summarize the overall analysis procedure in the figure below.
+
+![Overview](figures/Mech_Interp_Teaser_Photo_V1.png)
+
+With careful necessity and sufficiency tests conducted (measuring indirect and direct effects of candidate mediators appropriately), we surfaced "circuits" in the LLMs for latently resolving important parts of the proof to write down. For example, the figure below shows the attention-head circuit adopted by Gemma-2-9B for resolving the first answer token in the proof, which needs to invoke the right fact to start the proof (requiring to latently execute "QUERY $\to$ Relevant Rule $\to$ Relevant Fact $\to$ Correct Answer Token", essentially the hardest place in the proof). We index attention heads by (Layer Index, Head Index).
+
+![9B_circuit](figures/Gemma-2-9B_circuit.png)
+
+The attention head families are primarily divided according to their attention patterns and finer "causal surgeries", such as swapping the locations of the rules while keeping everything else identical across the normal-counterfactual pairs of prompts. We illustrate select results for the Gemma-2-9B model in the figure below.
+
+![Finergrained](figures/neurips_logicInterp_9B_finegrained.png)
+
+The surprising part is that the LLMs we analyzed all seem to share the functional sub-circuits, that is, they contain families of attention heads which exhibit specialized attention patterns as seen in the 9B model, and respond similarly to the "causal surgeries".
+
+Please refer to our paper for full details. In addition, while the full analysis in our paper was conducted inside Google, the open-sourced code in this repository is built on the [TransformerLens library](https://github.com/TransformerLensOrg/TransformerLens).
 
 ## Getting Started
 
