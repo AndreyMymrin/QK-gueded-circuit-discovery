@@ -30,6 +30,8 @@ In this repository, we present a series of Jupyter notebooks that walks through 
 
 To get started, you will need to install the required packages for the TransformerLens library. However, in the Jupyter notebooks, we also provide a section for environment setup for your convenience. Moreover, you will need a Huggingface account for downloading the Gemma 2 models which we will conduct analyses on. Additionally, the folder `helpers` contain the patching and attention analysis tools which we use in the notebooks for analyzing the LLMs.
 
+For shared GPU-server deployment with Docker and Jupyter, see `SERVER_DOCKER_RUNBOOK.md`.
+
 ## BibTeX
 ```
 @inproceedings{

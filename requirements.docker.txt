@@ -1,0 +1,17 @@
+transformer_lens==2.14.0
+einops
+jaxtyping
+plotly
+matplotlib
+typing_extensions>=4.12
+wandb
+typeguard
+transformers
+datasets
+rich
+better-abc
+jupyterlab
+ipywidgets
+pandas
+huggingface_hub
+tqdm
