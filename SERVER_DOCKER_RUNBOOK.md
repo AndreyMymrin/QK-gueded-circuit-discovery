@@ -91,3 +91,93 @@ Also remove old, unused user images periodically:
 docker image ls "<username>/prop-logic-transformer"
 docker rmi <username>/prop-logic-transformer:<old_tag>
 ```
+
+## 8. ZHORES-2 adaptation (Slurm + Apptainer)
+
+ZHORES-2 compute nodes use Slurm and Apptainer, so Docker containers should be converted before execution.
+
+### 8.1 Build and publish image from your workstation
+
+Build the image with this repository Dockerfile:
+
+```bash
+./scripts/docker/build_image.sh <dockerhub_user> <date>
+```
+
+Push it to a registry reachable from ZHORES:
+
+```bash
+docker push <dockerhub_user>/prop-logic-transformer:<date>
+```
+
+### 8.2 SSH to login node
+
+```bash
+ssh <username>@cdise.login
+# or ssh <username>@10.5.1.1
+# or ssh <username>@10.5.1.2
+```
+
+### 8.3 Pull image as Apptainer SIF on ZHORES
+
+```bash
+module load apptainer
+mkdir -p /gpfs/gpfs0/$USER/containers
+apptainer pull \
+  /gpfs/gpfs0/$USER/containers/prop-logic-transformer-<date>.sif \
+  docker://docker.io/<dockerhub_user>/prop-logic-transformer:<date>
+```
+
+### 8.4 Submit interactive Jupyter job (GPU queue)
+
+Use template: `scripts/hpc/zhores2_jupyter.sbatch`
+
+```bash
+cd /gpfs/gpfs0/$USER/prop-logic-transformer-circuit
+chmod +x scripts/hpc/*.sbatch
+export IMAGE_SIF=/gpfs/gpfs0/$USER/containers/prop-logic-transformer-<date>.sif
+export HF_TOKEN=hf_xxx
+export JUPYTER_TOKEN=my_token
+sbatch scripts/hpc/zhores2_jupyter.sbatch
+```
+
+Then inspect job logs to get the compute node:
+
+```bash
+squeue -u $USER
+tail -f logic-jupyter-<job_id>.out
+```
+
+From your laptop, create SSH tunnel:
+
+```bash
+ssh -N -L 8888:<compute_node_hostname>:8888 <username>@cdise.login
+```
+
+Open:
+
+```text
+http://127.0.0.1:8888/lab?token=my_token
+```
+
+### 8.5 Submit notebook execution as a queued batch job
+
+Use template: `scripts/hpc/zhores2_run_notebook.sbatch`
+
+```bash
+cd /gpfs/gpfs0/$USER/prop-logic-transformer-circuit
+export IMAGE_SIF=/gpfs/gpfs0/$USER/containers/prop-logic-transformer-<date>.sif
+export HF_TOKEN=hf_xxx
+sbatch scripts/hpc/zhores2_run_notebook.sbatch
+```
+
+Output notebook is written to:
+
+- `/gpfs/gpfs0/$USER/logic-results/LLM_Analysis_Part1_executed_<job_id>.ipynb`
+
+## 9. Queue and policy tips for ZHORES-2
+
+- Use `ais-gpu` for GPU jobs and always set realistic `--time`.
+- Prefer 1 GPU for this notebook first (`--gres=gpu:1`) and scale only if utilization justifies it.
+- Do not run heavy compute from login nodes (`an01`, `an02`); submit via Slurm.
+- Keep project, model cache, and outputs under `/gpfs/gpfs0/$USER` to avoid home quota pressure.
