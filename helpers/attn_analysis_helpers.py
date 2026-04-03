@@ -84,7 +84,7 @@ def _find_marker(tokens_row: List[int],
 def _find_in_range(tokens_row: List[int], model, clause_text: str,
                    start_: int, end_: int) -> Optional[Span]:
     """
-    Find clause_text (as token-ID sequence) within [start_bound, end_bound) using region markers.
+    Find clause_text (as token-ID sequence) within [start_, end_) using region markers.
     For our purposes, the clause_text would fall into the categories of queried rule and correct fact,
         since this is primarily used for finding the attention mass of a selected attention head on such clauses.
     
@@ -104,9 +104,9 @@ def _find_in_range(tokens_row: List[int], model, clause_text: str,
     for v in base_variants:
         for punct in [".", ";"]:
             v2 = v + _to_ids(model, punct)
-            starts = _find_all_subseq(hay, v2)
+            starts = _find_all_subseq(region, v2)
             if starts:
-                s = starts[0] + start_bound
+                s = starts[0] + start_
                 return (s, s + len(v2))
     return None
 
@@ -115,38 +115,70 @@ def _find_in_range(tokens_row: List[int], model, clause_text: str,
 def locate_final_problem_regions(tokens_row: torch.Tensor, model) -> Dict[str, Span]:
     """
     Returns token-ID level bounds (start, end) for the last problem in the prompt:
-    - rules_region: from end of 'Rules:' to start of 'Facts:'
-    - facts_region: from end of 'Facts:' to start of 'Question:'
-    - problem_region: from 'Rules:' to 'Answer:' for the last problem (inclusive on both ends)
+    - Old format ('Rules/Facts/Question/Answer'):
+      - rules_region: from end of 'Rules:' to start of 'Facts:'
+      - facts_region: from end of 'Facts:' to start of 'Question:'
+      - problem_region: from 'Rules:' to 'Answer:' for the last problem (inclusive on both ends)
+    - New format ('CONTEXT/STATEMENT/ANSWER'):
+      - rules_region: the CONTENT span inside 'CONTEXT'
+      - facts_region: same as rules_region (kept for compatibility)
+      - problem_region: from 'CONTEXT:' marker to 'ANSWER:' marker (inclusive on marker end)
     - answer_marker: the 'Answer:' marker span
     """
     row = tokens_row.tolist()
 
-    # Rules region (the LogOp chain and linear chain)
+    # Old format path: Rules/Facts/Question/Answer
     rules_m = _find_marker(row, model, "Rules:", want_last=True)
-    rules_start, rules_end = rules_m
+    if rules_m is not None:
+        rules_start, rules_end = rules_m
 
-    # Facts region (the truth-value assignment sentences)
-    facts_m = _find_marker(row, model, "Facts:", start_at=rules_end, want_last=False)
-    facts_start, facts_end = facts_m
+        facts_m = _find_marker(row, model, "Facts:", start_at=rules_end, want_last=False)
+        if facts_m is None:
+            raise ValueError("Could not find 'Facts:' after final 'Rules:'.")
+        facts_start, facts_end = facts_m
 
-    # Question region ("Question: state the truth value of QUERY.")
-    question_m = _find_marker(row, model, "Question:", start_at=facts_end, want_last=False)
-    answer_m   = _find_marker(row, model, "Answer:",   start_at=facts_end, want_last=False)
-    q_start, q_end = (answer_m if question_m is None else question_m)
+        question_m = _find_marker(row, model, "Question:", start_at=facts_end, want_last=False)
+        answer_m = _find_marker(row, model, "Answer:", start_at=facts_end, want_last=False)
+        if question_m is None and answer_m is None:
+            raise ValueError("Could not find either 'Question:' or 'Answer:' after final 'Facts:'.")
+        q_start, q_end = (answer_m if question_m is None else question_m)
 
-    final_answer_m = _find_marker(row, model, "Answer:", start_at=q_end, want_last=False)
-    if final_answer_m is None:
-        if answer_m is not None and answer_m[0] >= facts_end:
-            final_answer_m = answer_m
-        else:
-            raise ValueError("Could not find final 'Answer:' for the last problem.")
-    ans_start, ans_end = final_answer_m
+        final_answer_m = _find_marker(row, model, "Answer:", start_at=q_end, want_last=False)
+        if final_answer_m is None:
+            if answer_m is not None and answer_m[0] >= facts_end:
+                final_answer_m = answer_m
+            else:
+                raise ValueError("Could not find final 'Answer:' for the last problem.")
+        ans_start, ans_end = final_answer_m
 
+        return {
+            "rules_region": (rules_end, facts_start),
+            "facts_region": (facts_end, q_start),
+            "problem_region": (rules_start, ans_end),
+            "answer_marker": (ans_start, ans_end),
+        }
+
+    # New format path: CONTEXT/STATEMENT/ANSWER
+    context_m = _find_marker(row, model, "CONTEXT:", want_last=True)
+    if context_m is None:
+        raise ValueError("Could not find either legacy ('Rules:') or OOD ('CONTEXT:') prompt markers.")
+    context_start, context_end = context_m
+
+    statement_m = _find_marker(row, model, "STATEMENT:", start_at=context_end, want_last=False)
+    if statement_m is None:
+        raise ValueError("Could not find 'STATEMENT:' after final 'CONTEXT:'.")
+    statement_start, statement_end = statement_m
+
+    answer_m = _find_marker(row, model, "ANSWER:", start_at=statement_end, want_last=False)
+    if answer_m is None:
+        raise ValueError("Could not find final 'ANSWER:' for OOD-format prompt.")
+    ans_start, ans_end = answer_m
+
+    context_content_region = (context_end, statement_start)
     return {
-        "rules_region": (rules_end, facts_start),
-        "facts_region": (facts_end, q_start),
-        "problem_region": (rules_start, ans_end),
+        "rules_region": context_content_region,
+        "facts_region": context_content_region,
+        "problem_region": (context_start, ans_end),
         "answer_marker": (ans_start, ans_end),
     }
 

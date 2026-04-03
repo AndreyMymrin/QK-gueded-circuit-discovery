@@ -128,6 +128,23 @@ apptainer pull \
   docker://docker.io/<dockerhub_user>/prop-logic-transformer:<date>
 ```
 
+If you see `no space left on device` during `apptainer build/pull`, move Apptainer temp/cache away from `/tmp`:
+
+```bash
+mkdir -p /gpfs/gpfs0/$USER/apptainer-tmp /gpfs/gpfs0/$USER/apptainer-cache
+export APPTAINER_TMPDIR=/gpfs/gpfs0/$USER/apptainer-tmp
+export APPTAINER_CACHEDIR=/gpfs/gpfs0/$USER/apptainer-cache
+export TMPDIR=/gpfs/gpfs0/$USER/apptainer-tmp
+```
+
+Then repeat `apptainer pull` or `apptainer build`.
+
+Note: building containers is heavy; use a Slurm CPU job instead of login node:
+
+```bash
+srun -p ais-cpu --time=02:00:00 --cpus-per-task=4 --mem=32G --pty bash
+```
+
 ### 8.4 Submit interactive Jupyter job (GPU queue)
 
 Use template: `scripts/hpc/zhores2_jupyter.sbatch`

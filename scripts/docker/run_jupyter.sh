@@ -36,6 +36,7 @@ docker run --rm -it \
   -p "127.0.0.1:${host_port}:8888" \
   -e HF_HOME=/workspace/.cache/huggingface \
   -e TRANSFORMERS_CACHE=/workspace/.cache/huggingface \
+  -e PYTHONPATH=/workspace/project \
   -e HF_TOKEN="${HF_TOKEN:-}" \
   -e JUPYTER_PORT=8888 \
   -e JUPYTER_TOKEN="${JUPYTER_TOKEN:-}" \

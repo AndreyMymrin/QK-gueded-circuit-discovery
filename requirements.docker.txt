@@ -1,4 +1,4 @@
-transformer_lens==2.14.0
+# Use the repository's bundled transformer_lens package via PYTHONPATH (/workspace/project).
 einops
 jaxtyping
 plotly
@@ -6,7 +6,7 @@ matplotlib
 typing_extensions>=4.12
 wandb
 typeguard
-transformers
+transformers>=4.57.1,<5
 datasets
 rich
 better-abc

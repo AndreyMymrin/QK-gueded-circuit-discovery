@@ -37,6 +37,7 @@ fi
 
 export APPTAINERENV_HF_HOME=/workspace/.cache/huggingface
 export APPTAINERENV_TRANSFORMERS_CACHE=/workspace/.cache/huggingface
+export APPTAINERENV_PYTHONPATH=/workspace/project
 export APPTAINERENV_HF_TOKEN="${HF_TOKEN:-}"
 export APPTAINERENV_JUPYTER_PORT="$JUPYTER_PORT"
 export APPTAINERENV_JUPYTER_TOKEN="$JUPYTER_TOKEN"
