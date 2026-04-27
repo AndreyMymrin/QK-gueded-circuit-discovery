@@ -81,6 +81,33 @@ def _find_marker(tokens_row: List[int],
     return best
 
 
+def _find_marker_any(
+    tokens_row: List[int],
+    model,
+    markers: List[str],
+    start_at: int = 0,
+    end_at: Optional[int] = None,
+    want_last: bool = False,
+) -> Optional[Span]:
+    """
+    Find marker using multiple textual variants (e.g., 'Context:' and 'CONTEXT:').
+    Returns the earliest or latest span by start index depending on want_last.
+    """
+    best: Optional[Span] = None
+    for marker in markers:
+        span = _find_marker(tokens_row, model, marker, start_at=start_at, end_at=end_at, want_last=want_last)
+        if span is None:
+            continue
+        if best is None:
+            best = span
+            continue
+        if want_last and span[0] > best[0]:
+            best = span
+        if (not want_last) and span[0] < best[0]:
+            best = span
+    return best
+
+
 def _find_in_range(tokens_row: List[int], model, clause_text: str,
                    start_: int, end_: int) -> Optional[Span]:
     """
@@ -128,22 +155,22 @@ def locate_final_problem_regions(tokens_row: torch.Tensor, model) -> Dict[str, S
     row = tokens_row.tolist()
 
     # Old format path: Rules/Facts/Question/Answer
-    rules_m = _find_marker(row, model, "Rules:", want_last=True)
+    rules_m = _find_marker_any(row, model, ["Rules:", "RULES:"], want_last=True)
     if rules_m is not None:
         rules_start, rules_end = rules_m
 
-        facts_m = _find_marker(row, model, "Facts:", start_at=rules_end, want_last=False)
+        facts_m = _find_marker_any(row, model, ["Facts:", "FACTS:"], start_at=rules_end, want_last=False)
         if facts_m is None:
             raise ValueError("Could not find 'Facts:' after final 'Rules:'.")
         facts_start, facts_end = facts_m
 
-        question_m = _find_marker(row, model, "Question:", start_at=facts_end, want_last=False)
-        answer_m = _find_marker(row, model, "Answer:", start_at=facts_end, want_last=False)
+        question_m = _find_marker_any(row, model, ["Question:", "QUESTION:"], start_at=facts_end, want_last=False)
+        answer_m = _find_marker_any(row, model, ["Answer:", "ANSWER:"], start_at=facts_end, want_last=False)
         if question_m is None and answer_m is None:
             raise ValueError("Could not find either 'Question:' or 'Answer:' after final 'Facts:'.")
         q_start, q_end = (answer_m if question_m is None else question_m)
 
-        final_answer_m = _find_marker(row, model, "Answer:", start_at=q_end, want_last=False)
+        final_answer_m = _find_marker_any(row, model, ["Answer:", "ANSWER:"], start_at=q_end, want_last=False)
         if final_answer_m is None:
             if answer_m is not None and answer_m[0] >= facts_end:
                 final_answer_m = answer_m
@@ -158,20 +185,20 @@ def locate_final_problem_regions(tokens_row: torch.Tensor, model) -> Dict[str, S
             "answer_marker": (ans_start, ans_end),
         }
 
-    # New format path: CONTEXT/STATEMENT/ANSWER
-    context_m = _find_marker(row, model, "CONTEXT:", want_last=True)
+    # New format path: CONTEXT/STATEMENT/ANSWER (case-robust)
+    context_m = _find_marker_any(row, model, ["CONTEXT:", "Context:"], want_last=True)
     if context_m is None:
-        raise ValueError("Could not find either legacy ('Rules:') or OOD ('CONTEXT:') prompt markers.")
+        raise ValueError("Could not find either legacy ('Rules:') or OOD ('Context:'/'CONTEXT:') prompt markers.")
     context_start, context_end = context_m
 
-    statement_m = _find_marker(row, model, "STATEMENT:", start_at=context_end, want_last=False)
+    statement_m = _find_marker_any(row, model, ["STATEMENT:", "Statement:"], start_at=context_end, want_last=False)
     if statement_m is None:
-        raise ValueError("Could not find 'STATEMENT:' after final 'CONTEXT:'.")
+        raise ValueError("Could not find 'Statement:'/'STATEMENT:' after final 'Context:' marker.")
     statement_start, statement_end = statement_m
 
-    answer_m = _find_marker(row, model, "ANSWER:", start_at=statement_end, want_last=False)
+    answer_m = _find_marker_any(row, model, ["ANSWER:", "Answer:"], start_at=statement_end, want_last=False)
     if answer_m is None:
-        raise ValueError("Could not find final 'ANSWER:' for OOD-format prompt.")
+        raise ValueError("Could not find final 'Answer:'/'ANSWER:' for OOD-format prompt.")
     ans_start, ans_end = answer_m
 
     context_content_region = (context_end, statement_start)
@@ -246,6 +273,8 @@ def head_attention_mass_at_pos(
     span_finder=None,                           # kept for compatibility (unused here)
     spans_by_label: Optional[Dict[str, List[Optional[Span]]]] = None,
     normalize: bool = False,
+    attention_patterns: Optional[torch.Tensor] = None,
+    problem_regions: Optional[List[Optional[Span]]] = None,
 ) -> Dict[str, Any]:
     """
     If spans_by_label is None:
@@ -264,84 +293,133 @@ def head_attention_mass_at_pos(
     B, S = clean_tokens.shape
     assert isinstance(dest_pos, int), "dest_pos must be a single integer"
 
-    # Run once to get attention patterns (softmax probs): [B, n_heads, dest, src]
-    _, cache = model.run_with_cache(clean_tokens)
-    patt = cache["pattern", layer_idx][:, head_idx, :, :]  # [B, dest, src]
+    def _slice_pattern(patterns: torch.Tensor) -> torch.Tensor:
+        # Supported shapes:
+        # - [B, L, H, S, S]
+        # - [B, H, S, S]
+        # - [B, S, S]
+        if patterns.ndim == 5:
+            return patterns[:, layer_idx, head_idx, :, :]
+        if patterns.ndim == 4:
+            return patterns[:, head_idx, :, :]
+        if patterns.ndim == 3:
+            return patterns
+        raise ValueError(f"Unsupported attention_patterns shape: {tuple(patterns.shape)}")
 
-    # Prepare outputs
-    by_span = {}
-    problem_total_mass = [None] * B
+    if attention_patterns is None:
+        if model is None:
+            raise ValueError("Either `model` or `attention_patterns` must be provided.")
+        _, cache = model.run_with_cache(clean_tokens)
+        patt = cache["pattern", layer_idx][:, head_idx, :, :]  # [B, dest, src]
+    else:
+        patt = _slice_pattern(attention_patterns)
+        if patt.shape[0] != B:
+            raise ValueError("Batch size mismatch between clean_tokens and attention_patterns.")
 
-    # Pre-compute final-problem regions per example
-    problem_regions: List[Optional[Span]] = []
+    # Build spans if not provided.
+    if spans_by_label is None:
+        if model is None:
+            raise ValueError("`model` is required when spans_by_label is not provided.")
+        row_spans = clause_token_spans_for_batch(clean_tokens, model, problem_infos)
+        spans_by_label = {
+            "queried_rule": [row.get("queried_rule") for row in row_spans],
+            "correct_fact": [row.get("correct_fact") for row in row_spans],
+        }
+
+    # Build problem regions if not provided.
+    if problem_regions is None:
+        problem_regions = []
+        if model is not None:
+            for b in range(B):
+                try:
+                    regions = locate_final_problem_regions(clean_tokens[b], model)
+                    problem_regions.append(regions["problem_region"])
+                except Exception:
+                    problem_regions.append((0, S))
+        else:
+            problem_regions = [(0, S) for _ in range(B)]
+
+    if len(problem_regions) != B:
+        raise ValueError("problem_regions length must match batch size.")
+
+    by_span: Dict[str, Dict[str, List[Optional[float]]]] = {}
+    masses: Dict[str, List[Optional[float]]] = {label: [] for label in spans_by_label.keys()}
+    problem_total_mass: List[Optional[float]] = [None] * B
+    max_others: List[Optional[float]] = [None] * B
+
+    dest_idx = dest_pos if dest_pos >= 0 else patt.shape[1] + dest_pos
+
     for b in range(B):
-        try:
-            regions = locate_final_problem_regions(clean_tokens[b], model)
-            problem_regions.append(regions["problem_region"])
-        except Exception:
-            problem_regions.append(None)
+        if not (0 <= dest_idx < patt.shape[1]):
+            for label in masses.keys():
+                masses[label].append(None)
+            continue
 
-    # Compute total attention mass in the final problem, once per sample
-    for b in range(B):
-        '''if not (0 <= dest_pos < S) or problem_regions[b] is None:
-            problem_total_mass[b] = None
-            continue'''
-        p_s, p_e = problem_regions[b]
+        region = problem_regions[b]
+        if region is None:
+            for label in masses.keys():
+                masses[label].append(None)
+            continue
+
+        p_s, p_e = region
+        p_s = max(0, int(p_s))
+        p_e = min(int(p_e), patt.shape[-1])
+        if p_s >= p_e:
+            for label in masses.keys():
+                masses[label].append(None)
+            continue
+
         src_all = torch.arange(p_s, p_e, device=patt.device)
-        problem_total_mass[b] = float(patt[b, dest_pos, src_all].sum().item())
+        total = float(patt[b, dest_idx, src_all].sum().item())
+        problem_total_mass[b] = total
+        union_mask = torch.ones_like(src_all, dtype=torch.bool)
 
-    # For each label, compute mass on the span and max-other-in-problem
-    masses = {}
-    for label, _ in spans_by_label.items():
-        masses[label] = []
-    
-    max_others = []
-    for b in range(B):
-        first_enter = True
         for label, span_list in spans_by_label.items():
-            span = span_list[b]
-            p_s, p_e = problem_regions[b]
-            src_all = torch.arange(p_s, p_e, device=patt.device)
+            span = span_list[b] if b < len(span_list) else None
+            if span is None:
+                masses[label].append(None)
+                continue
 
-            # Specified span of tokens. Set s1+1 to include trailing tokens such as "." as well.
+            # Keep backward compatibility:
+            # caller often stores inclusive end token for clause span.
             s0, s1 = span
             s1 += 1
-            # Adjust the span indices if we are specifying the span from the right
             if s0 < 0 and s1 < 0:
                 s0 = p_e + s0
                 s1 = p_e + s1
 
-            # Attention mass on the specified span of tokens
-            src_span = torch.arange(s0, s1, device=patt.device)
-            if normalize:
-                masses[label].append(float(patt[b, dest_pos, src_span].sum().item()/problem_total_mass[b]))
-            else:
-                masses[label].append(float(patt[b, dest_pos, src_span].sum().item()))
-            by_span[label] = {'mass': masses[label]}
+            s0 = max(0, int(s0))
+            s1 = min(int(s1), patt.shape[-1])
+            if s0 >= s1:
+                masses[label].append(None)
+                continue
 
-            # Max on other positions within the problem (exclude the span)
-            # Build a mask over src_all that zeros out the span window.
-            if first_enter:
-                mask = torch.ones_like(src_all, dtype=torch.bool)
-                first_enter = False
-            # indices of the span relative to src_all
+            span_mass = float(patt[b, dest_idx, s0:s1].sum().item())
+            if normalize:
+                masses[label].append(None if total == 0.0 else span_mass / total)
+            else:
+                masses[label].append(span_mass)
+
+            # Remove overlap with the union mask to compute max_other_in_problem.
             low = max(s0, p_s) - p_s
             high = min(s1, p_e) - p_s
-            mask[low:high] = False  # Exclude the (relative) indices in the span
+            if low < high:
+                union_mask[low:high] = False
 
-        # CAUTION: max_others is computed at the positions outside of all the spans
-        # provided, e.g. if we provide "correct_fact" and "QUERY" token spans, then
-        # max_others is obtained at the positions outside of the UNION of those two spans!
-        if mask.any():
+        if union_mask.any():
+            other = float(patt[b, dest_idx, src_all[union_mask]].max().item())
             if normalize:
-                max_others.append(float(patt[b, dest_pos, src_all[mask]].max().item()/problem_total_mass[b]))
+                max_others[b] = None if total == 0.0 else other / total
             else:
-                max_others.append(float(patt[b, dest_pos, src_all[mask]].max().item()))
+                max_others[b] = other
         else:
-            # No "other" tokens remaining, the specified span covers the final problem
-            max_others.append(None)
+            max_others[b] = None
 
-        by_span[label]["max_other_in_problem"] = max_others
+    for label in masses.keys():
+        by_span[label] = {
+            "mass": masses[label],
+            "max_other_in_problem": max_others,
+        }
 
     out: Dict[str, Any] = {
         "layer": layer_idx,
@@ -351,4 +429,13 @@ def head_attention_mass_at_pos(
         "max_other_in_problem": max_others,
         "by_span": by_span,
     }
+
+    # Backward-compatible aliases.
+    if "queried_rule" in by_span:
+        out["rule_mass"] = by_span["queried_rule"]["mass"]
+        out["rule_max_other_in_problem"] = by_span["queried_rule"]["max_other_in_problem"]
+    if "correct_fact" in by_span:
+        out["fact_mass"] = by_span["correct_fact"]["mass"]
+        out["fact_max_other_in_problem"] = by_span["correct_fact"]["max_other_in_problem"]
+
     return out
